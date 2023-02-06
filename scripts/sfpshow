@@ -244,6 +244,11 @@ def display_invalid_intf_presence(intf_name):
     port_table.append((intf_name, 'Not present'))
     click.echo(tabulate(port_table, header))
 
+def display_invalid_intf_type(intf_name):
+    header = ['Port', 'Type']
+    port_table = []
+    port_table.append((intf_name, 'None Type'))
+    click.echo(tabulate(port_table, header))
 
 def display_invalid_intf_pm(intf_name):
     output = intf_name + ': %s\n' % ZR_PM_NOT_APPLICABLE_STR
@@ -280,6 +285,28 @@ class SFPShow(object):
                                                 units)
         return output
 
+    def determine_optics_type(self, sfp_info_dict):
+        if sfp_info_dict['type'] == "QSFP-DD Double Density 8X Pluggable Transceiver":
+            value = sfp_info_dict['media_interface_code']
+            if 'Copper cable' == value:
+                try:
+                    appl_advert_dict = ast.literal_eval(sfp_info_dict['application_advertisement'])
+                    value += ', ' + appl_advert_dict[1]['host_electrical_interface_id']
+                except (KeyError, ValueError):
+                    pass
+        elif 'specification_compliance' in sfp_info_dict:
+            try:
+                spec_compliance_dict = ast.literal_eval(sfp_info_dict['specification_compliance'])
+                if spec_compliance_dict['10/40G Ethernet Compliance Code'] == 'Extended':
+                    value = spec_compliance_dict['Extended Specification Compliance']
+                else:
+                    value = spec_compliance_dict['10/40G Ethernet Compliance Code']
+            except (KeyError, ValueError):
+                value = 'N/A'
+        else:
+            value = 'N/A'
+        return value
+
     # Convert sfp info in DB to cli output string
     def convert_sfp_info_to_output_string(self, sfp_info_dict):
         indent = ' ' * 8
@@ -307,6 +334,8 @@ class SFPShow(object):
                         output += '{}N/A\n'.format((indent * 2))
             elif key == 'application_advertisement':
                 output += covert_application_advertisement_to_output_string(indent, sfp_info_dict)
+            elif key == 'optics_type':
+                output += '{}{}: {}\n'.format(indent, QSFP_DATA_MAP['optics_type'], self.determine_optics_type(sfp_info_dict))
             else:
                 output += '{}{}: {}\n'.format(indent, QSFP_DATA_MAP[key], sfp_info_dict[key])
 
@@ -518,6 +547,13 @@ class SFPShow(object):
             output = 'Not present'
         return output
 
+    def convert_interface_sfp_type_to_cli_output_string(self, state_db, interface_name):
+        sfp_info_dict = state_db.get_all(self.db.STATE_DB, 'TRANSCEIVER_INFO|{}'.format(interface_name))
+        if sfp_info_dict:
+            output = self.determine_optics_type(sfp_info_dict)
+        else:
+            output = None
+        return output
 
     @multi_asic_util.run_on_multi_asic
     def get_presence(self):
@@ -549,6 +585,25 @@ class SFPShow(object):
                     self.intf_pm[interface] = self.convert_interface_sfp_pm_to_cli_output_string(
                         self.db, interface)
 
+    @multi_asic_util.run_on_multi_asic
+    def get_type(self):
+        port_table = []
+
+        if self.intf_name is not None:
+            type_string = self.convert_interface_sfp_type_to_cli_output_string(self.db, self.intf_name)
+            if type_string is not None:
+                port_table.append((self.intf_name, type_string))
+        else:
+            port_table_keys = self.db.keys(self.db.APPL_DB, "PORT_TABLE:*")
+            for i in port_table_keys:
+                key = re.split(':', i, maxsplit=1)[-1].strip()
+                if key and key.startswith(front_panel_prefix()) and not key.startswith((backplane_prefix(), inband_prefix(), recirc_prefix())):
+                    type_string = self.convert_interface_sfp_type_to_cli_output_string(self.db, key)
+                    if type_string is not None:
+                        port_table.append((key, type_string))
+
+        self.table += port_table
+
     def display_eeprom(self):
         click.echo("\n".join([f"{k}: {v}" for k, v in natsorted(self.intf_eeprom.items())]))
 
@@ -560,6 +615,12 @@ class SFPShow(object):
     def display_pm(self):
         click.echo(
             "\n".join([f"{k}: {v}" for k, v in natsorted(self.intf_pm.items())]))
+
+    def display_type(self):
+        header = ['Port', 'Type']
+        sorted_port_table = natsorted(self.table)
+        click.echo(tabulate(sorted_port_table, header))
+
 # This is our main entrypoint - the main 'sfpshow' command
 
 
@@ -623,6 +684,23 @@ def pm(port, namespace):
     sfp.get_pm()
     sfp.display_pm()
 
+# 'type' subcommand
+
+
+@cli.command()
+@click.option('-p', '--port', metavar='<port_name>', help="Display SFP type for port <port_name> only")
+@click.option('-n', '--namespace', default=None, help="Display interfaces for specific namespace")
+def type(port, namespace):
+    if port and multi_asic.is_multi_asic() and namespace is None:
+        try:
+            namespace = multi_asic.get_namespace_for_port(port)
+        except Exception:
+            display_invalid_intf_type(port)
+            sys.exit(1)
+
+    sfp = SFPShow(port, namespace)
+    sfp.get_type()
+    sfp.display_type()
 
 if __name__ == "__main__":
     cli()
