@@ -214,12 +214,40 @@ def port_oper_speed_get_raw(db, intf_name):
         speed = db.get(db.APPL_DB, PORT_STATUS_TABLE_PREFIX + intf_name, PORT_SPEED)
     return speed
 
+def determine_optics_type(sfp_info_dict):
+    import ast
+    if not sfp_info_dict:
+        return 'N/A'
+    if 'type' in sfp_info_dict and sfp_info_dict['type'] in {"QSFP-DD Double Density 8X Pluggable Transceiver", "QSFP+ or later with CMIS"}:
+        value = sfp_info_dict['media_interface_code']
+        if 'Copper cable' == value:
+            try:
+                appl_advert_dict = ast.literal_eval(sfp_info_dict['application_advertisement'])
+                value += ', ' + appl_advert_dict[1]['host_electrical_interface_id']
+            except (KeyError, ValueError):
+                pass
+        elif value.startswith('Active Cable') and 'host_electrical_interface' in sfp_info_dict:
+            value = sfp_info_dict['host_electrical_interface']  + ', ' + value
+    elif 'specification_compliance' in sfp_info_dict:
+        try:
+            spec_compliance_dict = ast.literal_eval(sfp_info_dict['specification_compliance'])
+            if spec_compliance_dict['10/40G Ethernet Compliance Code'] == 'Extended':
+                value = spec_compliance_dict['Extended Specification Compliance']
+            else:
+                value = spec_compliance_dict['10/40G Ethernet Compliance Code']
+        except (KeyError, ValueError):
+            value = 'N/A'
+    else:
+        value = 'N/A'
+    return value
+
 def port_optics_get(state_db, intf_name, type):
     """
     Get optic type info for port
     """
     full_table_id = PORT_TRANSCEIVER_TABLE_PREFIX + intf_name
-    optics_type = state_db.get(state_db.STATE_DB, full_table_id, type)
+    sfp_info_dict = state_db.get_all(state_db.STATE_DB, full_table_id)
+    optics_type = determine_optics_type(sfp_info_dict) #state_db.get(state_db.STATE_DB, full_table_id, type)
     if optics_type is None:
         if is_rj45_port(intf_name):
             return OPTICS_TYPE_RJ45
